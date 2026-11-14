@@ -46,11 +46,15 @@ func generateCode() (string, error) {
 func main() {
 	mux := http.NewServeMux()
 
-	PORT := os.Getenv("PORT")
-	if PORT == "" {
-		PORT = "8080"
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
 	}
-	baseURL := "http://localhost:" + PORT
+
+	baseURL := os.Getenv("BASE_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:" + port
+	}
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
@@ -129,6 +133,6 @@ func main() {
 
 		http.Redirect(w, r, originalURL, http.StatusFound)
 	})
-	log.Println("listening on :" + PORT)
-	log.Fatal(http.ListenAndServe(":"+PORT, mux))
+	log.Println("listening on :" + port)
+	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
