@@ -9,10 +9,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
+	"sync"
 )
 
-var links = make(map[string]string)
+var (
+	links   = make(map[string]string)
+	linksMu sync.RWMutex
+)
 
 type createLinkReq struct {
 	URL string `json:"url"`
@@ -43,11 +46,11 @@ func generateCode() (string, error) {
 func main() {
 	mux := http.NewServeMux()
 
-	baseURL := os.Getenv("BASE_URL")
-	if baseURL == "" {
-		baseURL = "http://localhost:8080"
+	PORT := os.Getenv("PORT")
+	if PORT == "" {
+		PORT = "8080"
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL := "http://localhost:" + PORT
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
@@ -84,11 +87,15 @@ func main() {
 				return
 			}
 
+			linksMu.Lock()
+
 			if _, exists := links[code]; exists {
+				linksMu.Unlock()
 				continue
 			}
 
 			links[code] = req.URL
+			linksMu.Unlock()
 			created = true
 			break
 		}
@@ -111,7 +118,9 @@ func main() {
 	mux.HandleFunc("GET /{code}", func(w http.ResponseWriter, r *http.Request) {
 		code := r.PathValue("code")
 
+		linksMu.RLock()
 		originalURL, ok := links[code]
+		linksMu.RUnlock()
 
 		if !ok {
 			http.NotFound(w, r)
@@ -120,6 +129,6 @@ func main() {
 
 		http.Redirect(w, r, originalURL, http.StatusFound)
 	})
-	log.Println("listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Println("listening on :" + PORT)
+	log.Fatal(http.ListenAndServe(":"+PORT, mux))
 }
