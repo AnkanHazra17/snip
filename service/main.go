@@ -3,10 +3,13 @@ package main
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"log"
 	"math/big"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 )
 
 var links = make(map[string]string)
@@ -40,13 +43,27 @@ func generateCode() (string, error) {
 func main() {
 	mux := http.NewServeMux()
 
+	baseURL := os.Getenv("BASE_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:8080"
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
 
 	mux.HandleFunc("POST /api/links", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 		var req createLinkReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			var maxBytesErr *http.MaxBytesError
+
+			if errors.As(err, &maxBytesErr) {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
@@ -59,28 +76,49 @@ func main() {
 		}
 
 		var code string
-		for {
+		created := false
+		for attempt := 0; attempt < 5; attempt++ {
 			code, err = generateCode()
 			if err != nil {
 				http.Error(w, "failed to generate code", http.StatusInternalServerError)
 				return
 			}
 
-			if _, exists := links[code]; !exists {
-				break
+			if _, exists := links[code]; exists {
+				continue
 			}
+
+			links[code] = req.URL
+			created = true
+			break
 		}
 
-		links[code] = req.URL
-		
+		if !created {
+			http.Error(w, "failed to generate unique code", http.StatusInternalServerError)
+			return
+		}
+
 		resp := createLinkResp{
 			Code:     code,
-			ShortURL: "http://localhost:8080/" + code,
+			ShortURL: baseURL + "/" + code,
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(resp)
+	})
+
+	mux.HandleFunc("GET /{code}", func(w http.ResponseWriter, r *http.Request) {
+		code := r.PathValue("code")
+
+		originalURL, ok := links[code]
+
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+
+		http.Redirect(w, r, originalURL, http.StatusFound)
 	})
 	log.Println("listening on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
