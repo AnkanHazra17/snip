@@ -7,7 +7,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /snip ./service
 
 # ---- run stage ----
-FROM gcr.io/distroless/static-debian12   
+FROM gcr.io/distroless/static-debian12:nonroot   
 COPY --from=build /snip /snip
 EXPOSE 8080
 ENTRYPOINT ["/snip"]  
