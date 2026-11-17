@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
 	"math/big"
 	"net/http"
@@ -14,6 +13,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
@@ -92,16 +94,25 @@ func (s *server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleRedirect(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
 
-	linksMu.RLock()
-	originalURL, ok := links[code]
-	linksMu.RUnlock()
+	var longURL string
 
-	if !ok {
+	err := s.db.QueryRow(
+		r.Context(),
+		"SELECT long_url FROM links WHERE code = $1",
+		code,
+	).Scan(&longURL)
+
+	if errors.Is(err, pgx.ErrNoRows) {
 		http.NotFound(w, r)
 		return
 	}
 
-	http.Redirect(w, r, originalURL, http.StatusFound)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, longURL, http.StatusFound)
 }
 
 type createLinkReq struct {
