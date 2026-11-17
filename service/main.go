@@ -1,16 +1,19 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
 	"math/big"
 	"net/http"
 	"net/url"
 	"os"
-	"sync"
 	"strings"
+	"sync"
+	"time"
 )
 
 var (
@@ -45,6 +48,27 @@ func generateCode() (string, error) {
 }
 
 func main() {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal("DATABASE_URL is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		log.Fatalf("failed to create database pool: %v", err)
+	}
+
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatalf("failed to connect to database: %v", err)
+	}
+
+	log.Println("connected to database")
+
 	mux := http.NewServeMux()
 
 	port := os.Getenv("PORT")
