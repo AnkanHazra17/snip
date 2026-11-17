@@ -11,17 +11,13 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var (
-	links   = make(map[string]string)
-	linksMu sync.RWMutex
-)
 
 type server struct {
 	db      *pgxpool.Pool
@@ -56,22 +52,31 @@ func (s *server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 
 	var code string
 	created := false
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		code, err = generateCode()
 		if err != nil {
 			http.Error(w, "failed to generate code", http.StatusInternalServerError)
 			return
 		}
 
-		linksMu.Lock()
+		_, err = s.db.Exec(
+			r.Context(),
+			"INSERT INTO links (code, long_url) VALUES ($1, $2)",
+			code,
+			req.URL,
+		)
 
-		if _, exists := links[code]; exists {
-			linksMu.Unlock()
-			continue
+		if err != nil {
+			var pgErr *pgconn.PgError
+
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				continue
+			}
+
+			log.Printf("create link: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
 		}
-
-		links[code] = req.URL
-		linksMu.Unlock()
 		created = true
 		break
 	}
@@ -108,6 +113,7 @@ func (s *server) handleRedirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
+		log.Printf("redirect %q: %v", code, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
