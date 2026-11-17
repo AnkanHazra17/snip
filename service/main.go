@@ -18,7 +18,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-
 type server struct {
 	db      *pgxpool.Pool
 	baseURL string
@@ -55,6 +54,7 @@ func (s *server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	for range 5 {
 		code, err = generateCode()
 		if err != nil {
+			log.Printf("generate short code: %v", err)
 			http.Error(w, "failed to generate code", http.StatusInternalServerError)
 			return
 		}
@@ -82,6 +82,7 @@ func (s *server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !created {
+		log.Printf("create link: no unique code after 5 attempts")
 		http.Error(w, "failed to generate unique code", http.StatusInternalServerError)
 		return
 	}
