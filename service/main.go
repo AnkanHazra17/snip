@@ -21,6 +21,89 @@ var (
 	linksMu sync.RWMutex
 )
 
+type server struct {
+	db      *pgxpool.Pool
+	baseURL string
+}
+
+func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("ok"))
+}
+
+func (s *server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var req createLinkReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	parsedURL, err := url.Parse(req.URL)
+
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+		http.Error(w, "invalid URL", http.StatusBadRequest)
+		return
+	}
+
+	var code string
+	created := false
+	for attempt := 0; attempt < 5; attempt++ {
+		code, err = generateCode()
+		if err != nil {
+			http.Error(w, "failed to generate code", http.StatusInternalServerError)
+			return
+		}
+
+		linksMu.Lock()
+
+		if _, exists := links[code]; exists {
+			linksMu.Unlock()
+			continue
+		}
+
+		links[code] = req.URL
+		linksMu.Unlock()
+		created = true
+		break
+	}
+
+	if !created {
+		http.Error(w, "failed to generate unique code", http.StatusInternalServerError)
+		return
+	}
+
+	resp := createLinkResp{
+		Code:     code,
+		ShortURL: s.baseURL + "/" + code,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *server) handleRedirect(w http.ResponseWriter, r *http.Request) {
+	code := r.PathValue("code")
+
+	linksMu.RLock()
+	originalURL, ok := links[code]
+	linksMu.RUnlock()
+
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	http.Redirect(w, r, originalURL, http.StatusFound)
+}
+
 type createLinkReq struct {
 	URL string `json:"url"`
 }
@@ -83,83 +166,17 @@ func main() {
 
 	baseURL = strings.TrimRight(baseURL, "/")
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
-	})
+	s := &server{
+		db:      pool,
+		baseURL: baseURL,
+	}
 
-	mux.HandleFunc("POST /api/links", func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
-		var req createLinkReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			var maxBytesErr *http.MaxBytesError
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
-			if errors.As(err, &maxBytesErr) {
-				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-				return
-			}
+	mux.HandleFunc("POST /api/links", s.handleCreateLink)
 
-			http.Error(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
+	mux.HandleFunc("GET /{code}", s.handleRedirect)
 
-		parsedURL, err := url.Parse(req.URL)
-
-		if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
-			http.Error(w, "invalid URL", http.StatusBadRequest)
-			return
-		}
-
-		var code string
-		created := false
-		for attempt := 0; attempt < 5; attempt++ {
-			code, err = generateCode()
-			if err != nil {
-				http.Error(w, "failed to generate code", http.StatusInternalServerError)
-				return
-			}
-
-			linksMu.Lock()
-
-			if _, exists := links[code]; exists {
-				linksMu.Unlock()
-				continue
-			}
-
-			links[code] = req.URL
-			linksMu.Unlock()
-			created = true
-			break
-		}
-
-		if !created {
-			http.Error(w, "failed to generate unique code", http.StatusInternalServerError)
-			return
-		}
-
-		resp := createLinkResp{
-			Code:     code,
-			ShortURL: baseURL + "/" + code,
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(resp)
-	})
-
-	mux.HandleFunc("GET /{code}", func(w http.ResponseWriter, r *http.Request) {
-		code := r.PathValue("code")
-
-		linksMu.RLock()
-		originalURL, ok := links[code]
-		linksMu.RUnlock()
-
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-
-		http.Redirect(w, r, originalURL, http.StatusFound)
-	})
 	log.Println("listening on :" + port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
