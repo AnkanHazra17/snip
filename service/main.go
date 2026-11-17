@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"sync"
+	"strings"
 )
 
 var (
@@ -55,6 +56,8 @@ func main() {
 	if baseURL == "" {
 		baseURL = "http://localhost:" + port
 	}
+
+	baseURL = strings.TrimRight(baseURL, "/")
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
