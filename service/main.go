@@ -119,6 +119,9 @@ func (s *server) handleRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	host, _ := os.Hostname()
+	w.Header().Set("X-Served-By", host)
+
 	http.Redirect(w, r, longURL, http.StatusFound)
 }
 
