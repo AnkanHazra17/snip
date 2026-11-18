@@ -16,10 +16,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 type server struct {
 	db      *pgxpool.Pool
+	cache   *redis.Client
 	baseURL string
 }
 
@@ -173,6 +175,27 @@ func main() {
 
 	log.Println("connected to database")
 
+	rdb := redis.NewClient(&redis.Options{
+		Addr:         os.Getenv("REDIS_ADDR"),
+		DialTimeout:  200 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+
+	defer rdb.Close()
+
+	redisCtx, redisCancel := context.WithTimeout(
+		context.Background(),
+		time.Second,
+	)
+	defer redisCancel()
+
+	if err := rdb.Ping(redisCtx).Err(); err != nil {
+		log.Printf("WARNING: failed to connect to Redis: %v", err)
+	} else {
+		log.Println("connected to redis")
+	}
+
 	mux := http.NewServeMux()
 
 	port := os.Getenv("PORT")
@@ -189,6 +212,7 @@ func main() {
 
 	s := &server{
 		db:      pool,
+		cache:   rdb,
 		baseURL: baseURL,
 	}
 

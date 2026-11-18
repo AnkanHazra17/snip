@@ -22,6 +22,13 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+  redis:
+    image: redis:7.4
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
   app:
     build: .
     deploy:
@@ -29,9 +36,12 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable
       BASE_URL: http://localhost:8080
+      REDIS_ADDR: redis:6379
 
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
   lb:
     image: nginx:1.27
