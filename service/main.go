@@ -101,24 +101,43 @@ func (s *server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleRedirect(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
+	key := "link:" + code
 
-	var longURL string
+	longURL, err := s.cache.Get(r.Context(), key).Result()
 
-	err := s.db.QueryRow(
-		r.Context(),
-		"SELECT long_url FROM links WHERE code = $1",
-		code,
-	).Scan(&longURL)
+	if err == nil {
+		w.Header().Set("X-Cache", "HIT")
+	} else {
+		w.Header().Set("X-Cache", "MISS")
+		if !errors.Is(err, redis.Nil) {
+			log.Printf("redis cache get %q: %v", code, err)
+		}
 
-	if errors.Is(err, pgx.ErrNoRows) {
-		http.NotFound(w, r)
-		return
-	}
+		err := s.db.QueryRow(
+			r.Context(),
+			"SELECT long_url FROM links WHERE code = $1",
+			code,
+		).Scan(&longURL)
 
-	if err != nil {
-		log.Printf("redirect %q: %v", code, err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+
+		if err != nil {
+			log.Printf("redirect %q: %v", code, err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		if cacheErr := s.cache.Set(
+			r.Context(),
+			key,
+			longURL,
+			24*time.Hour,
+		).Err(); cacheErr != nil {
+			log.Printf("redis cache set %q: %v", code, cacheErr)
+		}
 	}
 
 	host, _ := os.Hostname()
