@@ -8,6 +8,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD}
 
     ports:
       - "5432:5432"
@@ -15,6 +16,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./db/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+      - ./db/002-replication.sh:/docker-entrypoint-initdb.d/002-replication.sh:ro
 
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
