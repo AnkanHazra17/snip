@@ -199,6 +199,7 @@ func main() {
 		DialTimeout:  200 * time.Millisecond,
 		ReadTimeout:  100 * time.Millisecond,
 		WriteTimeout: 100 * time.Millisecond,
+		MaxRetries:    -1,
 	})
 
 	defer rdb.Close()
