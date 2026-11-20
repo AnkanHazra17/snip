@@ -130,7 +130,7 @@ func (s *server) handleRedirect(w http.ResponseWriter, r *http.Request) {
 			log.Printf("redis cache get %q: %v", code, err)
 		}
 
-		longURL, err := s.lookupLongURL(r.Context(), code)
+		longURL, err = s.lookupLongURL(r.Context(), code)
 
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
