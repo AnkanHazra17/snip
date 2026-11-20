@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -13,6 +14,33 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 )
+
+func (s *server) lookupLongURL(ctx context.Context, code string) (string, error) {
+	var longURL string
+
+	err := s.replica.QueryRow(
+		ctx,
+		"SELECT long_url FROM links WHERE code = $1",
+		code,
+	).Scan(&longURL)
+
+	if err == nil {
+		return longURL, nil
+	}
+
+	if !errors.Is(err, pgx.ErrNoRows) {
+		log.Printf("replica lookup failed for %q: %v", code, err)
+	}
+
+	// Replica missed the row or failed. Try the primary.
+	err = s.db.QueryRow(
+		ctx,
+		"SELECT long_url FROM links WHERE code = $1",
+		code,
+	).Scan(&longURL)
+
+	return longURL, err
+}
 
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
@@ -102,11 +130,7 @@ func (s *server) handleRedirect(w http.ResponseWriter, r *http.Request) {
 			log.Printf("redis cache get %q: %v", code, err)
 		}
 
-		err := s.replica.QueryRow(
-			r.Context(),
-			"SELECT long_url FROM links WHERE code = $1",
-			code,
-		).Scan(&longURL)
+		longURL, err := s.lookupLongURL(r.Context(), code)
 
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
@@ -114,7 +138,7 @@ func (s *server) handleRedirect(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			log.Printf("redirect %q: %v", code, err)
+			log.Printf("database lookup %q: %v", code, err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
