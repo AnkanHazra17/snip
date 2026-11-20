@@ -22,6 +22,29 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+  db-replica:
+    image: postgres:17
+    user: postgres
+    environment:
+      PGPASSWORD: ${REPLICATION_PASSWORD}
+    command: >
+      bash -c '
+        if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
+          pg_basebackup -h db -U replicator -D /var/lib/postgresql/data -R -X stream;
+          chmod 0700 /var/lib/postgresql/data;
+        fi;
+        exec postgres'
+    volumes:
+      - replica_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U snip -d snip"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      db:
+        condition: service_healthy
   redis:
     image: redis:7.4
     healthcheck:
@@ -54,3 +77,4 @@ services:
 
 volumes:
   postgres_data:
+  replica_data:
