@@ -58,11 +58,14 @@ services:
       replicas: 3
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable
+      DATABASE_REPLICA_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db-replica:5432/${POSTGRES_DB}?sslmode=disable
       BASE_URL: http://localhost:8080
       REDIS_ADDR: redis:6379
 
     depends_on:
       db:
+        condition: service_healthy
+      db-replica:
         condition: service_healthy
       redis:
         condition: service_healthy

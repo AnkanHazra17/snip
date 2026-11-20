@@ -1,223 +1,27 @@
 package main
 
 import (
-	"context"
-	"crypto/rand"
-	"encoding/json"
-	"errors"
 	"log"
-	"math/big"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
-	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
-type server struct {
-	db      *pgxpool.Pool
-	cache   *redis.Client
-	baseURL string
-}
-
-func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("ok"))
-}
-
-func (s *server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
-	var req createLinkReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		var maxBytesErr *http.MaxBytesError
-
-		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	parsedURL, err := url.Parse(req.URL)
-
-	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
-		http.Error(w, "invalid URL", http.StatusBadRequest)
-		return
-	}
-
-	var code string
-	created := false
-	for range 5 {
-		code, err = generateCode()
-		if err != nil {
-			log.Printf("generate short code: %v", err)
-			http.Error(w, "failed to generate code", http.StatusInternalServerError)
-			return
-		}
-
-		_, err = s.db.Exec(
-			r.Context(),
-			"INSERT INTO links (code, long_url) VALUES ($1, $2)",
-			code,
-			req.URL,
-		)
-
-		if err != nil {
-			var pgErr *pgconn.PgError
-
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				continue
-			}
-
-			log.Printf("create link: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		created = true
-		break
-	}
-
-	if !created {
-		log.Printf("create link: no unique code after 5 attempts")
-		http.Error(w, "failed to generate unique code", http.StatusInternalServerError)
-		return
-	}
-
-	resp := createLinkResp{
-		Code:     code,
-		ShortURL: s.baseURL + "/" + code,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (s *server) handleRedirect(w http.ResponseWriter, r *http.Request) {
-	code := r.PathValue("code")
-	key := "link:" + code
-
-	longURL, err := s.cache.Get(r.Context(), key).Result()
-
-	if err == nil {
-		w.Header().Set("X-Cache", "HIT")
-	} else {
-		w.Header().Set("X-Cache", "MISS")
-		if !errors.Is(err, redis.Nil) {
-			log.Printf("redis cache get %q: %v", code, err)
-		}
-
-		err := s.db.QueryRow(
-			r.Context(),
-			"SELECT long_url FROM links WHERE code = $1",
-			code,
-		).Scan(&longURL)
-
-		if errors.Is(err, pgx.ErrNoRows) {
-			http.NotFound(w, r)
-			return
-		}
-
-		if err != nil {
-			log.Printf("redirect %q: %v", code, err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		if cacheErr := s.cache.Set(
-			r.Context(),
-			key,
-			longURL,
-			24*time.Hour,
-		).Err(); cacheErr != nil {
-			log.Printf("redis cache set %q: %v", code, cacheErr)
-		}
-	}
-
-	host, _ := os.Hostname()
-	w.Header().Set("X-Served-By", host)
-
-	http.Redirect(w, r, longURL, http.StatusFound)
-}
-
-type createLinkReq struct {
-	URL string `json:"url"`
-}
-
-type createLinkResp struct {
-	Code     string `json:"code"`
-	ShortURL string `json:"short_url"`
-}
-
-const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-func generateCode() (string, error) {
-	code := make([]byte, 6)
-
-	for i := range code {
-		n, err := rand.Int(rand.Reader, big.NewInt(62))
-		if err != nil {
-			return "", err
-		}
-
-		code[i] = alphabet[n.Int64()]
-	}
-
-	return string(code), nil
-}
-
 func main() {
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		log.Fatal("DATABASE_URL is required")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.New(ctx, databaseURL)
+	pool, err := newPostgresPool("DATABASE_URL")
 	if err != nil {
-		log.Fatalf("failed to create database pool: %v", err)
+		log.Fatal(err)
 	}
-
 	defer pool.Close()
 
-	if err := pool.Ping(ctx); err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+	replicaPool, err := newPostgresPool("DATABASE_REPLICA_URL")
+	if err != nil {
+		log.Fatal(err)
 	}
+	defer replicaPool.Close()
 
-	log.Println("connected to database")
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr:         os.Getenv("REDIS_ADDR"),
-		DialTimeout:  200 * time.Millisecond,
-		ReadTimeout:  100 * time.Millisecond,
-		WriteTimeout: 100 * time.Millisecond,
-		MaxRetries:    -1,
-		DialerRetries: 1,
-	})
-
+	rdb := newRedisClient()
 	defer rdb.Close()
-
-	redisCtx, redisCancel := context.WithTimeout(
-		context.Background(),
-		time.Second,
-	)
-	defer redisCancel()
-
-	if err := rdb.Ping(redisCtx).Err(); err != nil {
-		log.Printf("WARNING: failed to connect to Redis: %v", err)
-	} else {
-		log.Println("connected to redis")
-	}
-
-	mux := http.NewServeMux()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -233,16 +37,11 @@ func main() {
 
 	s := &server{
 		db:      pool,
+		replica: replicaPool,
 		cache:   rdb,
 		baseURL: baseURL,
 	}
 
-	mux.HandleFunc("GET /healthz", s.handleHealthz)
-
-	mux.HandleFunc("POST /api/links", s.handleCreateLink)
-
-	mux.HandleFunc("GET /{code}", s.handleRedirect)
-
 	log.Println("listening on :" + port)
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	log.Fatal(http.ListenAndServe(":"+port, s.routes()))
 }
